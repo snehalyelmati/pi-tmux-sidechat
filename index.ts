@@ -78,7 +78,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 
 			if (arg === "--pick") clearState();
 
-			ctx.ui.setStatus("scc", "sidechat: picking target");
+			setSidechatStatus(ctx, "sidechat: picking target");
 			const next = await pickTarget(ctx);
 			if (!next) {
 				await updateStatus(ctx);
@@ -97,7 +97,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 		if (!state) return;
 
 		if (!state.snapshotText) {
-			ctx.ui.setStatus("scc", "sidechat: target missing");
+			setSidechatStatus(ctx, "sidechat: target missing");
 			return {
 				systemPrompt: `${event.systemPrompt}\n\nYou are a read-only side-chat attached to another Pi session, but no target snapshot is available. Do not edit, write, commit, run bash, or message the main session.`,
 			};
@@ -114,7 +114,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 		if (!state) return;
 		if (SAFE_TOOLS.has(event.toolName)) return;
 
-		ctx.ui.setStatus("scc", `sidechat: blocked ${event.toolName}`);
+		setSidechatStatus(ctx, `sidechat: blocked ${event.toolName}`);
 		return { block: true, reason: "scc read-only mode: only read/web tools are allowed" };
 	});
 
@@ -195,7 +195,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 			snapshot = await buildSnapshotFromFile(target.session.path, target.pane.cwd, target.pane.paneId, target.label);
 		} catch (error) {
 			ctx.ui.notify(`sidechat: target session unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning");
-			ctx.ui.setStatus("scc", "sidechat: target missing");
+			setSidechatStatus(ctx, "sidechat: target missing");
 			return;
 		}
 
@@ -321,21 +321,25 @@ export default function sccExtension(pi: ExtensionAPI) {
 	async function updateStatus(ctx: ExtensionContext): Promise<string> {
 		if (!state) {
 			const text = explicitlyOff ? "sidechat: off" : `chat: ${currentSessionLabel(ctx)}`;
-			ctx.ui.setStatus("scc", text);
+			setSidechatStatus(ctx, text);
 			return text;
 		}
 
 		try {
 			await stat(state.targetSessionFile);
 			const text = `sidechat: ${targetLabel(state)}`;
-			ctx.ui.setStatus("scc", text);
+			setSidechatStatus(ctx, text);
 			return text;
 		} catch {
 			const text = "sidechat: target missing";
-			ctx.ui.setStatus("scc", text);
+			setSidechatStatus(ctx, text);
 			return text;
 		}
 	}
+}
+
+function setSidechatStatus(ctx: ExtensionContext, text: string) {
+	ctx.ui.setStatus("scc", ctx.ui.theme.fg("muted", text));
 }
 
 function currentSessionLabel(ctx: ExtensionContext): string {
