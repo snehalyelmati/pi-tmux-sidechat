@@ -1,4 +1,4 @@
-import { open, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -10,6 +10,8 @@ type SccState = {
 	targetCwd?: string;
 	targetName?: string;
 	connectedAt: number;
+	snapshotText?: string;
+	snapshotAt?: number;
 };
 
 type TmuxPane = {
@@ -28,23 +30,12 @@ type TmuxHere = {
 	cwd: string;
 };
 
-type SessionMeta = {
-	file: string;
-	label: string;
-	name?: string;
-	id?: string;
-	latestCompaction?: string;
-	messages: Array<{ role: "user" | "assistant"; text: string }>;
-};
-
 const STATE_TYPE = "scc_state";
 const SAFE_TOOLS = new Set(["read", "web_search", "fetch_content", "get_search_content"]);
 const RECENT_MESSAGES = 12;
 const MESSAGE_TEXT_LIMIT = 2_000;
 const COMPACTION_LIMIT = 3_000;
 const SNAPSHOT_LIMIT = 18_000;
-const HEADER_READ_BYTES = 64 * 1024;
-const TAIL_READ_BYTES = 256 * 1024;
 
 export default function sccExtension(pi: ExtensionAPI) {
 	let state: SccState | undefined;
@@ -104,19 +95,17 @@ export default function sccExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!state) return;
 
-		const snapshot = await buildSnapshot(state);
-		if (!snapshot) {
+		if (!state.snapshotText) {
 			ctx.ui.setStatus("scc", "scc: target missing");
 			return {
-				systemPrompt: `${event.systemPrompt}\n\nYou are a read-only side-chat attached to another Pi session, but the target session file is missing. Do not edit, write, commit, run bash, or message the main session.`,
+				systemPrompt: `${event.systemPrompt}\n\nYou are a read-only side-chat attached to another Pi session, but no target snapshot is available. Do not edit, write, commit, run bash, or message the main session.`,
 			};
 		}
 
-		state = { ...state, targetName: snapshot.label };
 		await updateStatus(ctx);
 
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n${snapshot.text}`,
+			systemPrompt: `${event.systemPrompt}\n\n${state.snapshotText}`,
 		};
 	});
 
@@ -157,6 +146,8 @@ export default function sccExtension(pi: ExtensionAPI) {
 					targetCwd: data.targetCwd,
 					targetName: data.targetName,
 					connectedAt: typeof data.connectedAt === "number" ? data.connectedAt : Date.now(),
+					snapshotText: typeof data.snapshotText === "string" ? data.snapshotText : undefined,
+					snapshotAt: typeof data.snapshotAt === "number" ? data.snapshotAt : undefined,
 				};
 				explicitlyOff = false;
 			}
@@ -197,14 +188,24 @@ export default function sccExtension(pi: ExtensionAPI) {
 		const target = targets.length === 1 ? targets[0] : await selectTarget(ctx, targets);
 		if (!target) return;
 
-		const meta = await readSessionMeta(target.session.path, target.pane.paneId, target.label);
+		let snapshot: { label: string; text: string };
+		try {
+			snapshot = await buildSnapshotFromFile(target.session.path, target.pane.cwd, target.pane.paneId, target.label);
+		} catch (error) {
+			ctx.ui.notify(`scc: target session unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			ctx.ui.setStatus("scc", "scc: target missing");
+			return;
+		}
+
 		return {
 			targetSessionFile: target.session.path,
 			targetPaneId: target.pane.paneId,
 			targetWindowId: here.windowId,
 			targetCwd: target.pane.cwd,
-			targetName: meta.label,
+			targetName: snapshot.label,
 			connectedAt: Date.now(),
+			snapshotText: snapshot.text,
+			snapshotAt: Date.now(),
 		};
 	}
 
@@ -322,10 +323,8 @@ export default function sccExtension(pi: ExtensionAPI) {
 		}
 
 		try {
-			const info = await stat(state.targetSessionFile);
-			const meta = await readSessionMeta(state.targetSessionFile, state.targetPaneId, state.targetName);
-			state = { ...state, targetName: meta.label };
-			const text = `scc: RO → ${meta.label}`;
+			await stat(state.targetSessionFile);
+			const text = `scc: RO → ${state.targetName ?? filenameId(state.targetSessionFile) ?? state.targetPaneId ?? "Unnamed"}`;
 			ctx.ui.setStatus("scc", text);
 			return text;
 		} catch {
@@ -365,62 +364,47 @@ function isSubagentSession(session: { name?: string; firstMessage?: string }): b
 	return [session.name, session.firstMessage].some((value) => value?.trim().startsWith("subagent-"));
 }
 
-async function buildSnapshot(state: SccState): Promise<{ label: string; text: string } | undefined> {
-	try {
-		const meta = await readSessionMeta(state.targetSessionFile, state.targetPaneId, state.targetName);
-		const lines = [
-			"You are a read-only side-chat attached to another Pi session.",
-			"",
-			"Target:",
-			`- label: ${meta.label}`,
-			`- cwd: ${state.targetCwd ?? "unknown"}`,
-			`- session file: ${state.targetSessionFile}`,
-			"",
-			"Rules:",
-			"- Never edit/write/commit.",
-			"- Never run bash.",
-			"- Never send messages to the main session.",
-			"- Use the target session snapshot below as context.",
-			"- Re-read the session file only when refreshing target context.",
-			"",
-			"Target session snapshot:",
-		];
+async function buildSnapshotFromFile(
+	file: string,
+	cwd: string,
+	paneId?: string,
+	cachedLabel?: string,
+): Promise<{ label: string; text: string }> {
+	const raw = await readFile(file, "utf8");
+	let sessionId: string | undefined;
+	let leafId: string | undefined;
+	const byId = new Map<string, any>();
 
-		if (meta.latestCompaction) {
-			lines.push("", "Latest compaction summary:", trim(meta.latestCompaction, COMPACTION_LIMIT));
-		}
-
-		lines.push("", `Recent user/assistant messages (last ${RECENT_MESSAGES}):`);
-		for (const message of meta.messages) {
-			lines.push(`\n[${message.role}]\n${trim(message.text, MESSAGE_TEXT_LIMIT)}`);
-		}
-
-		return { label: meta.label, text: trim(lines.join("\n"), SNAPSHOT_LIMIT) };
-	} catch {
-		return undefined;
-	}
-}
-
-async function readSessionMeta(file: string, paneId?: string, cachedLabel?: string): Promise<SessionMeta> {
-	let id: string | undefined;
-	let name: string | undefined;
-	let latestCompaction: string | undefined;
-	const messages: SessionMeta["messages"] = [];
-	const { header, tail } = await readSessionWindows(file);
-	const headerEntry = parseSessionLine(header.split("\n", 1)[0] ?? "");
-	if (headerEntry?.type === "session" && typeof headerEntry.id === "string") id = headerEntry.id;
-
-	for (const line of tail.split("\n")) {
+	for (const line of raw.split("\n")) {
 		const entry = parseSessionLine(line);
 		if (!entry) continue;
-
-		if (!id && entry.type === "session" && typeof entry.id === "string") id = entry.id;
-		if (entry.type === "session_info") name = entry.name?.trim() || undefined;
-		if (entry.type === "compaction" && typeof entry.summary === "string") {
-			latestCompaction = trim(entry.summary, COMPACTION_LIMIT);
+		if (entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
+		if (entry.type !== "session" && typeof entry.id === "string") {
+			byId.set(entry.id, entry);
+			leafId = entry.id;
 		}
+	}
 
+	const branch: any[] = [];
+	const seen = new Set<string>();
+	for (let id = leafId; id && !seen.has(id); ) {
+		seen.add(id);
+		const entry = byId.get(id);
+		if (!entry) break;
+		branch.push(entry);
+		id = typeof entry.parentId === "string" ? entry.parentId : undefined;
+	}
+	branch.reverse();
+
+	let name: string | undefined;
+	let latestCompaction: string | undefined;
+	const messages: Array<{ role: "user" | "assistant"; text: string }> = [];
+
+	for (const entry of branch) {
+		if (entry.type === "session_info") name = entry.name?.trim() || undefined;
+		if (entry.type === "compaction" && typeof entry.summary === "string") latestCompaction = trim(entry.summary, COMPACTION_LIMIT);
 		if (entry.type !== "message") continue;
+
 		const role = entry.message?.role;
 		if (role !== "user" && role !== "assistant") continue;
 		const text = messageText(entry.message, MESSAGE_TEXT_LIMIT);
@@ -429,33 +413,32 @@ async function readSessionMeta(file: string, paneId?: string, cachedLabel?: stri
 		if (messages.length > RECENT_MESSAGES) messages.shift();
 	}
 
-	return { file, id, name, latestCompaction, messages, label: name || cachedLabel || id?.slice(0, 8) || filenameId(file) || paneId || "Unnamed" };
-}
+	const label = name || cachedLabel || sessionId?.slice(0, 8) || filenameId(file) || paneId || "Unnamed";
+	const lines = [
+		"You are a read-only side-chat attached to another Pi session.",
+		"",
+		"Target:",
+		`- label: ${label}`,
+		`- cwd: ${cwd}`,
+		`- session file: ${file}`,
+		`- snapshot captured: ${new Date().toISOString()}`,
+		"",
+		"Rules:",
+		"- Never edit/write/commit.",
+		"- Never run bash.",
+		"- Never send messages to the main session.",
+		"- Use the target session snapshot below as context.",
+		"- This snapshot was captured when /scc connected; run /scc --pick to refresh.",
+		"",
+		"Target session snapshot:",
+	];
 
-async function readSessionWindows(file: string): Promise<{ header: string; tail: string }> {
-	const handle = await open(file, "r");
-	try {
-		const { size } = await handle.stat();
-		const header = await readWindow(handle, 0, Math.min(size, HEADER_READ_BYTES));
-		const tailStart = Math.max(0, size - TAIL_READ_BYTES);
-		let tail = await readWindow(handle, tailStart, size - tailStart);
+	if (latestCompaction) lines.push("", "Latest compaction summary:", latestCompaction);
 
-		if (tailStart > 0) {
-			const firstNewline = tail.indexOf("\n");
-			tail = firstNewline === -1 ? "" : tail.slice(firstNewline + 1);
-		}
+	lines.push("", `Recent user/assistant messages on latest persisted branch (last ${RECENT_MESSAGES}):`);
+	for (const message of messages) lines.push(`\n[${message.role}]\n${message.text}`);
 
-		return { header, tail };
-	} finally {
-		await handle.close();
-	}
-}
-
-async function readWindow(handle: Awaited<ReturnType<typeof open>>, position: number, length: number): Promise<string> {
-	if (length <= 0) return "";
-	const buffer = Buffer.alloc(length);
-	const { bytesRead } = await handle.read(buffer, 0, length, position);
-	return buffer.subarray(0, bytesRead).toString("utf8");
+	return { label, text: trim(lines.join("\n"), SNAPSHOT_LIMIT) };
 }
 
 function parseSessionLine(line: string): any | undefined {

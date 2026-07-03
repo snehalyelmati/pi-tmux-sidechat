@@ -11,7 +11,8 @@ In a tmux window with a main Pi pane, user opens a new pane, starts `pi`, runs `
 - Do NOT use intercom for `/scc`.
 - Do NOT send messages/asks/keys to the main Pi session.
 - Do NOT pollute the main session’s context.
-- The side-chat only reads the main session file from disk.
+- The side-chat only reads main-session content from the main session file on disk.
+- Exception: `/scc` may use read-only `tmux capture-pane` to read candidate panes’ visible `scc: <id-or-name>` status labels for active-session discovery. It must not send keys/messages.
 
 ## Docs to read
 
@@ -39,23 +40,27 @@ if 1: use that pane
 if N: ask user which pane
  |
  v
+capture candidate pane visible `scc: <id-or-name>` status label read-only
+ |
+ v
 get candidate pane cwd
  |
  v
-list Pi session files for that cwd
+list Pi session files for that cwd and match by visible status id/name
  |
  v
-if one obvious recent file: connect
-else ask user to pick session file
+if 0: show "No active Pi session found in this tmux window"
+if 1: connect
+if N: ask user which active session
  |
  v
-persist selected sessionFile in side-chat state
+persist selected sessionFile and bounded snapshot in side-chat state
  |
  v
 enable read-only mode
  |
  v
-on each side-chat turn, read selected session file and inject summary/context
+read selected session file once, persist bounded snapshot in side-chat state
 ```
 
 ## Important multi-window rule
@@ -70,7 +75,7 @@ Without cooperation from the main Pi process, exact mapping:
 tmux pane / pid -> exact Pi session file
 ```
 
-is not guaranteed. So v1 must include a session-file picker when ambiguous.
+is not guaranteed. For v1, every main pane should load this extension so it displays `scc: <current-session-name-or-id>`. `/scc` reads that visible status label with read-only `tmux capture-pane` and matches it to session files by id/name.
 
 ## Expected UX
 
@@ -127,16 +132,18 @@ Rules:
 - Never edit/write/commit.
 - Never send messages to the main session.
 - Use the target session snapshot below as context.
-- Re-read the session file only when refreshing target context.
+- This snapshot was captured when `/scc` connected; run `/scc --pick` to refresh.
 ```
 
 ## Session reading
 
-- Read selected `.jsonl`.
+- Read selected `.jsonl` once when `/scc` connects.
 - Parse JSONL entries.
+- Reconstruct the latest persisted branch from `parentId` links and skip off-branch entries.
 - Include compact recent context, not the whole giant file.
 - Minimum lazy version: last N user/assistant messages + latest compaction summary if present.
 - Keep output bounded.
+- Re-run `/scc --pick` or open a new side-chat to refresh the snapshot.
 
 ## Persistence
 
@@ -151,7 +158,9 @@ State shape:
   targetWindowId?: string,
   targetCwd?: string,
   targetName?: string,
-  connectedAt: number
+  connectedAt: number,
+  snapshotText?: string,
+  snapshotAt?: number
 }
 ```
 
@@ -164,7 +173,10 @@ Useful commands:
 ```bash
 tmux display-message -p '#{session_name} #{window_id} #{pane_id} #{pane_tty} #{pane_current_path}'
 tmux list-panes -t '<session>:<window>' -F '#{pane_id}\t#{pane_tty}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}'
+tmux capture-pane -p -t '<pane-id>'
 ```
+
+`capture-pane` is discovery-only: read the visible `scc: <id-or-name>` label from candidate panes in the current tmux window. Do not send keys/messages.
 
 ## Statusbar
 
@@ -177,6 +189,7 @@ ctx.ui.setStatus("scc", text);
 Status states:
 
 ```text
+scc: <current-session-name-or-id>
 scc: off
 scc: RO → <target-label>
 scc: pick target
@@ -225,6 +238,7 @@ scc: RO → 019f246c
 ## Status examples
 
 ```text
+scc: 019f246c
 scc: RO → fanout-mvp
 scc: RO → 019f246c
 scc: target missing
@@ -235,7 +249,7 @@ scc: target missing
 1. `session_start` after reconstructing `scc_state`
 2. after `/scc` connects
 3. after `/scc --pick`
-4. before each agent turn after stat/read target session file
+4. before each agent turn after stat target session file
 5. after a read-only guard blocks a tool
 
 ## No polling for v1
