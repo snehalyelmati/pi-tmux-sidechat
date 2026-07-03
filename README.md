@@ -16,6 +16,22 @@ In a tmux window with a main Pi pane, open a second pane, start `pi`, run `/scc`
 6. makes the side-chat read-only,
 7. injects a compact snapshot of the target session before each side-chat agent turn.
 
+## Usage
+
+Load the repo as an extension:
+
+```bash
+pi -e /path/to/pi-tmux-sidechat
+```
+
+Or from this checkout:
+
+```bash
+pi -e .
+```
+
+The extension entrypoint is `index.ts`.
+
 ## Commands
 
 - `/scc` — connect, or reuse an existing connection.
@@ -50,7 +66,6 @@ Example states:
 - `scc: off`
 - `scc: RO → fanout-mvp`
 - `scc: RO → 019f246c`
-- `scc: RO → fanout-mvp · stale 8m`
 - `scc: pick target`
 - `scc: target missing`
 

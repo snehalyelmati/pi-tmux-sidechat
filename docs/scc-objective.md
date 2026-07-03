@@ -127,7 +127,7 @@ Rules:
 - Never edit/write/commit.
 - Never send messages to the main session.
 - Use the target session snapshot below as context.
-- If context is stale, re-read the session file only.
+- Re-read the session file only when refreshing target context.
 ```
 
 ## Session reading
@@ -179,7 +179,6 @@ Status states:
 ```text
 scc: off
 scc: RO → <target-label>
-scc: RO → <target-label> · stale 8m
 scc: pick target
 scc: target missing
 ```
@@ -223,16 +222,11 @@ If unnamed, fallback:
 scc: RO → 019f246c
 ```
 
-## Stale status
-
-Compute staleness from selected session file mtime.
-
-Examples:
+## Status examples
 
 ```text
 scc: RO → fanout-mvp
 scc: RO → 019f246c
-scc: RO → fanout-mvp · stale 8m
 scc: target missing
 ```
 
