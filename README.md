@@ -2,6 +2,8 @@
 
 Pi extension for `/scc` — **side-chat connect**.
 
+![pi-tmux-sidechat screenshot](assets/screenshot.png)
+
 Use it in tmux to open a read-only side-chat over another Pi pane’s saved session. `/scc` syncs once at connect time, stores a bounded snapshot in the side-chat session, then answers from that cached context.
 
 ## Install

@@ -4,6 +4,9 @@
   "description": "Pi extension for read-only tmux side-chat sessions.",
   "type": "module",
   "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -24,6 +27,7 @@
     "index.ts",
     "README.md",
     "docs",
+    "assets/screenshot.png",
     "AGENTS.md"
   ],
   "peerDependencies": {
@@ -35,6 +39,7 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "image": "https://unpkg.com/@snehalyelmati/pi-tmux-sidechat/assets/screenshot.png"
   }
 }
