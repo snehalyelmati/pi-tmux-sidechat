@@ -21,7 +21,7 @@ The package entrypoint is `index.ts`.
 ## tmux setup
 
 1. Open a tmux window with your main Pi pane.
-2. Load this extension in the main Pi pane too, so its status shows `scc: <session-name-or-id>`.
+2. Load this extension in the main Pi pane too, so its status shows `chat: <session-name-or-full-id>`.
 3. Open a second tmux pane, start Pi with this extension, and run:
 
 ```text
@@ -42,7 +42,7 @@ The side-chat will connect to an active Pi pane in the same tmux window.
 
 1. detects the current tmux pane/window,
 2. lists Pi panes in this tmux window only,
-3. reads each candidate pane’s visible `scc: <id-or-name>` status label with read-only `tmux capture-pane`,
+3. reads each candidate pane’s visible `chat: <name-or-full-id>` status label with read-only `tmux capture-pane`,
 4. matches that label to a saved Pi session file for that pane cwd,
 5. reads the selected JSONL once,
 6. reconstructs the latest persisted branch via `parentId`,
@@ -66,11 +66,13 @@ After connect:
 
 ## Status examples
 
-- `scc: 019f246c` — normal Pi pane, not connected as side-chat.
-- `scc: RO → fanout-mvp` — side-chat connected read-only.
-- `scc: off` — explicitly cleared.
-- `scc: pick target`
-- `scc: target missing`
+- `chat: fanout-mvp` — normal named Pi pane.
+- `chat: 019f2916-...` — normal unnamed Pi pane with full session id.
+- `sidechat: fanout-mvp` — side-chat connected read-only.
+- `sidechat: off` — explicitly cleared.
+- `sidechat: picking target`
+- `sidechat: target missing`
+- `sidechat: blocked edit`
 
 ## Notes
 

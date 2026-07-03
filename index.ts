@@ -9,6 +9,7 @@ type SccState = {
 	targetWindowId?: string;
 	targetCwd?: string;
 	targetName?: string;
+	targetSessionId?: string;
 	connectedAt: number;
 	snapshotText?: string;
 	snapshotAt?: number;
@@ -71,13 +72,13 @@ export default function sccExtension(pi: ExtensionAPI) {
 			if (state && arg !== "--pick") {
 				enforceReadOnly();
 				await updateStatus(ctx);
-				ctx.ui.notify(`scc: already connected to ${state.targetName ?? state.targetSessionFile}`, "info");
+				ctx.ui.notify(`sidechat: already connected to ${targetLabel(state)}`, "info");
 				return;
 			}
 
 			if (arg === "--pick") clearState();
 
-			ctx.ui.setStatus("scc", "scc: pick target");
+			ctx.ui.setStatus("scc", "sidechat: picking target");
 			const next = await pickTarget(ctx);
 			if (!next) {
 				await updateStatus(ctx);
@@ -88,7 +89,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 			pi.appendEntry<SccState>(STATE_TYPE, next);
 			enforceReadOnly();
 			await updateStatus(ctx);
-			ctx.ui.notify(`scc: connected read-only to ${next.targetName ?? next.targetSessionFile}`, "info");
+			ctx.ui.notify(`sidechat: connected to ${targetLabel(next)}`, "info");
 		},
 	});
 
@@ -96,7 +97,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 		if (!state) return;
 
 		if (!state.snapshotText) {
-			ctx.ui.setStatus("scc", "scc: target missing");
+			ctx.ui.setStatus("scc", "sidechat: target missing");
 			return {
 				systemPrompt: `${event.systemPrompt}\n\nYou are a read-only side-chat attached to another Pi session, but no target snapshot is available. Do not edit, write, commit, run bash, or message the main session.`,
 			};
@@ -113,7 +114,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 		if (!state) return;
 		if (SAFE_TOOLS.has(event.toolName)) return;
 
-		ctx.ui.setStatus("scc", `scc: blocked ${event.toolName}`);
+		ctx.ui.setStatus("scc", `sidechat: blocked ${event.toolName}`);
 		return { block: true, reason: "scc read-only mode: only read/web tools are allowed" };
 	});
 
@@ -145,6 +146,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 					targetWindowId: data.targetWindowId,
 					targetCwd: data.targetCwd,
 					targetName: data.targetName,
+					targetSessionId: data.targetSessionId,
 					connectedAt: typeof data.connectedAt === "number" ? data.connectedAt : Date.now(),
 					snapshotText: typeof data.snapshotText === "string" ? data.snapshotText : undefined,
 					snapshotAt: typeof data.snapshotAt === "number" ? data.snapshotAt : undefined,
@@ -169,31 +171,31 @@ export default function sccExtension(pi: ExtensionAPI) {
 	async function pickTarget(ctx: ExtensionContext): Promise<SccState | undefined> {
 		const here = await getTmuxHere();
 		if (!here) {
-			ctx.ui.notify("scc: not inside tmux", "error");
+			ctx.ui.notify("sidechat: not inside tmux", "error");
 			return;
 		}
 
 		const panes = await getPiPanes(here);
 		if (panes.length === 0) {
-			ctx.ui.notify("No Pi pane found", "warning");
+			ctx.ui.notify("sidechat: no Pi pane found", "warning");
 			return;
 		}
 
 		const targets = (await Promise.all(panes.map((pane) => findActiveTargets(ctx, pane)))).flat();
 		if (targets.length === 0) {
-			ctx.ui.notify("No active Pi session found in this tmux window", "warning");
+			ctx.ui.notify("sidechat: no active Pi session found in this tmux window", "warning");
 			return;
 		}
 
 		const target = targets.length === 1 ? targets[0] : await selectTarget(ctx, targets);
 		if (!target) return;
 
-		let snapshot: { label: string; text: string };
+		let snapshot: Awaited<ReturnType<typeof buildSnapshotFromFile>>;
 		try {
 			snapshot = await buildSnapshotFromFile(target.session.path, target.pane.cwd, target.pane.paneId, target.label);
 		} catch (error) {
-			ctx.ui.notify(`scc: target session unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning");
-			ctx.ui.setStatus("scc", "scc: target missing");
+			ctx.ui.notify(`sidechat: target session unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			ctx.ui.setStatus("scc", "sidechat: target missing");
 			return;
 		}
 
@@ -202,7 +204,8 @@ export default function sccExtension(pi: ExtensionAPI) {
 			targetPaneId: target.pane.paneId,
 			targetWindowId: here.windowId,
 			targetCwd: target.pane.cwd,
-			targetName: snapshot.label,
+			targetName: snapshot.name,
+			targetSessionId: snapshot.sessionId,
 			connectedAt: Date.now(),
 			snapshotText: snapshot.text,
 			snapshotAt: Date.now(),
@@ -288,7 +291,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 	}
 
 	async function findActiveTargets(ctx: ExtensionContext, pane: TmuxPane) {
-		const label = await capturePaneSccLabel(pane);
+		const label = await capturePaneChatLabel(pane);
 		if (!label) return [];
 
 		const currentSession = ctx.sessionManager.getSessionFile();
@@ -300,14 +303,14 @@ export default function sccExtension(pi: ExtensionAPI) {
 		return sessions.map((session) => ({ pane, session, label }));
 	}
 
-	async function capturePaneSccLabel(pane: TmuxPane): Promise<string | undefined> {
+	async function capturePaneChatLabel(pane: TmuxPane): Promise<string | undefined> {
 		const result = await pi.exec("tmux", ["capture-pane", "-p", "-t", pane.paneId]);
-		return result.code === 0 ? parseSccStatus(result.stdout) : undefined;
+		return result.code === 0 ? parseChatStatus(result.stdout) : undefined;
 	}
 
 	async function selectTarget(ctx: ExtensionContext, targets: Awaited<ReturnType<typeof findActiveTargets>>) {
 		const options = targets.map((target, index) => {
-			const label = target.session.name?.trim() || target.session.id.slice(0, 8) || filenameId(target.session.path) || target.label;
+			const label = target.session.name?.trim() || target.session.id;
 			return `${index + 1}. ${label}    pane ${target.pane.paneId}    ${target.pane.cwd}    modified ${age(target.session.modified.getTime())} ago`;
 		});
 		const choice = await ctx.ui.select("Pick active Pi session:", options);
@@ -317,18 +320,18 @@ export default function sccExtension(pi: ExtensionAPI) {
 
 	async function updateStatus(ctx: ExtensionContext): Promise<string> {
 		if (!state) {
-			const text = explicitlyOff ? "scc: off" : `scc: ${currentSessionLabel(ctx)}`;
+			const text = explicitlyOff ? "sidechat: off" : `chat: ${currentSessionLabel(ctx)}`;
 			ctx.ui.setStatus("scc", text);
 			return text;
 		}
 
 		try {
 			await stat(state.targetSessionFile);
-			const text = `scc: RO → ${state.targetName ?? filenameId(state.targetSessionFile) ?? state.targetPaneId ?? "Unnamed"}`;
+			const text = `sidechat: ${targetLabel(state)}`;
 			ctx.ui.setStatus("scc", text);
 			return text;
 		} catch {
-			const text = "scc: target missing";
+			const text = "sidechat: target missing";
 			ctx.ui.setStatus("scc", text);
 			return text;
 		}
@@ -336,19 +339,19 @@ export default function sccExtension(pi: ExtensionAPI) {
 }
 
 function currentSessionLabel(ctx: ExtensionContext): string {
-	return ctx.sessionManager.getSessionName() ?? ctx.sessionManager.getSessionId().slice(0, 8);
+	return ctx.sessionManager.getSessionName() ?? ctx.sessionManager.getSessionId();
 }
 
-function parseSccStatus(text: string): string | undefined {
-	for (const line of text.split("\n").reverse()) {
-		const match = stripAnsi(line).match(/\bscc:\s*([^\n]+)/);
-		if (!match) continue;
+function targetLabel(state: SccState): string {
+	return state.targetName ?? state.targetSessionId ?? filenameId(state.targetSessionFile) ?? state.targetPaneId ?? "Unnamed";
+}
 
+function parseChatStatus(text: string): string | undefined {
+	for (const line of text.split("\n").reverse()) {
+		const match = stripAnsi(line).match(/\bchat:\s*([^\n]+)/);
+		if (!match) continue;
 		const value = match[1].split(/\s{2,}|[│|]/)[0].trim();
-		if (!value || value === "off" || value === "pick target" || value === "target missing" || value.startsWith("RO")) {
-			continue;
-		}
-		return value;
+		if (value) return value;
 	}
 }
 
@@ -357,7 +360,7 @@ function stripAnsi(text: string): string {
 }
 
 function sessionMatchesLabel(session: { id: string; name?: string }, label: string): boolean {
-	return session.id.startsWith(label) || session.name?.trim() === label;
+	return session.id === label || session.name?.trim() === label;
 }
 
 function isSubagentSession(session: { name?: string; firstMessage?: string }): boolean {
@@ -369,7 +372,7 @@ async function buildSnapshotFromFile(
 	cwd: string,
 	paneId?: string,
 	cachedLabel?: string,
-): Promise<{ label: string; text: string }> {
+): Promise<{ label: string; name?: string; sessionId?: string; text: string }> {
 	const raw = await readFile(file, "utf8");
 	let sessionId: string | undefined;
 	let leafId: string | undefined;
@@ -413,7 +416,7 @@ async function buildSnapshotFromFile(
 		if (messages.length > RECENT_MESSAGES) messages.shift();
 	}
 
-	const label = name || cachedLabel || sessionId?.slice(0, 8) || filenameId(file) || paneId || "Unnamed";
+	const label = name || cachedLabel || sessionId || filenameId(file) || paneId || "Unnamed";
 	const lines = [
 		"You are a read-only side-chat attached to another Pi session.",
 		"",
@@ -438,7 +441,7 @@ async function buildSnapshotFromFile(
 	lines.push("", `Recent user/assistant messages on latest persisted branch (last ${RECENT_MESSAGES}):`);
 	for (const message of messages) lines.push(`\n[${message.role}]\n${message.text}`);
 
-	return { label, text: trim(lines.join("\n"), SNAPSHOT_LIMIT) };
+	return { label, name, sessionId, text: trim(lines.join("\n"), SNAPSHOT_LIMIT) };
 }
 
 function parseSessionLine(line: string): any | undefined {
@@ -467,7 +470,7 @@ function messageText(message: any, limit: number): string {
 
 function filenameId(file: string): string | undefined {
 	const match = basename(file).match(/_([A-Za-z0-9._-]+)\.jsonl$/);
-	return match?.[1]?.slice(0, 8);
+	return match?.[1];
 }
 
 function age(timeMs: number): string {

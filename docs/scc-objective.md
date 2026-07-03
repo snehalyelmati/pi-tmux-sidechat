@@ -12,7 +12,7 @@ In a tmux window with a main Pi pane, user opens a new pane, starts `pi`, runs `
 - Do NOT send messages/asks/keys to the main Pi session.
 - Do NOT pollute the main session’s context.
 - The side-chat only reads main-session content from the main session file on disk.
-- Exception: `/scc` may use read-only `tmux capture-pane` to read candidate panes’ visible `scc: <id-or-name>` status labels for active-session discovery. It must not send keys/messages.
+- Exception: `/scc` may use read-only `tmux capture-pane` to read candidate panes’ visible `chat: <name-or-full-id>` status labels for active-session discovery. It must not send keys/messages.
 
 ## Docs to read
 
@@ -40,13 +40,13 @@ if 1: use that pane
 if N: ask user which pane
  |
  v
-capture candidate pane visible `scc: <id-or-name>` status label read-only
+capture candidate pane visible `chat: <name-or-full-id>` status label read-only
  |
  v
 get candidate pane cwd
  |
  v
-list Pi session files for that cwd and match by visible status id/name
+list Pi session files for that cwd and match by exact visible status id/name
  |
  v
 if 0: show "No active Pi session found in this tmux window"
@@ -75,7 +75,7 @@ Without cooperation from the main Pi process, exact mapping:
 tmux pane / pid -> exact Pi session file
 ```
 
-is not guaranteed. For v1, every main pane should load this extension so it displays `scc: <current-session-name-or-id>`. `/scc` reads that visible status label with read-only `tmux capture-pane` and matches it to session files by id/name.
+is not guaranteed. For v1, every main pane should load this extension so it displays `chat: <session-name-or-full-id>`. `/scc` reads that visible status label with read-only `tmux capture-pane` and matches it to session files by exact id/name.
 
 ## Expected UX
 
@@ -158,6 +158,7 @@ State shape:
   targetWindowId?: string,
   targetCwd?: string,
   targetName?: string,
+  targetSessionId?: string,
   connectedAt: number,
   snapshotText?: string,
   snapshotAt?: number
@@ -176,7 +177,7 @@ tmux list-panes -t '<session>:<window>' -F '#{pane_id}\t#{pane_tty}\t#{pane_pid}
 tmux capture-pane -p -t '<pane-id>'
 ```
 
-`capture-pane` is discovery-only: read the visible `scc: <id-or-name>` label from candidate panes in the current tmux window. Do not send keys/messages.
+`capture-pane` is discovery-only: read the visible `chat: <name-or-full-id>` label from candidate panes in the current tmux window. Do not send keys/messages.
 
 ## Statusbar
 
@@ -189,14 +190,13 @@ ctx.ui.setStatus("scc", text);
 Status states:
 
 ```text
-scc: <current-session-name-or-id>
-scc: off
-scc: RO → <target-label>
-scc: pick target
-scc: target missing
+chat: <session-name-or-full-id>
+sidechat: <target-label-or-full-id>
+sidechat: off
+sidechat: picking target
+sidechat: target missing
+sidechat: blocked <tool>
 ```
-
-`RO` means side-chat read-only mode is active.
 
 ## Target label
 
@@ -205,8 +205,8 @@ Do not primarily show tmux pane ids like `%34`; they are not meaningful enough.
 Display priority:
 
 1. latest `session_info.name` from selected target `.jsonl`
-2. session header `id` shortened to 8 chars
-3. UUID in session filename shortened to 8 chars
+2. full session header `id`
+3. UUID in session filename
 4. tmux pane id fallback
 
 Where names come from:
@@ -226,22 +226,23 @@ Pi saves this in the session file as:
 Then side-chat status should show:
 
 ```text
-scc: RO → fanout-mvp
+sidechat: fanout-mvp
 ```
 
-If unnamed, fallback:
+If unnamed, fallback to the full session id:
 
 ```text
-scc: RO → 019f246c
+sidechat: 019f2916-...full-id
 ```
 
 ## Status examples
 
 ```text
-scc: 019f246c
-scc: RO → fanout-mvp
-scc: RO → 019f246c
-scc: target missing
+chat: fanout-mvp
+chat: 019f2916-...full-id
+sidechat: fanout-mvp
+sidechat: 019f2916-...full-id
+sidechat: target missing
 ```
 
 ## When to update status
@@ -262,7 +263,7 @@ Pane ids may still appear in selection details:
 
 ```text
 fanout-mvp    pane %34    /repo    modified 9s ago
-019f246c      pane %37    /repo    modified 2m ago
+019f2916-...  pane %37    /repo    modified 2m ago
 ```
 
 ## Acceptance checks
