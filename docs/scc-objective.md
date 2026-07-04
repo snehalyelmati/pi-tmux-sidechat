@@ -108,6 +108,7 @@ Implement real enforcement:
 Allowed tools after connect:
 
 - `read`
+- `ask_user_question`
 - web tools if available
 - maybe non-mutating custom tools
 - no `edit`

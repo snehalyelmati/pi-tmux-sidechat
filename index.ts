@@ -32,7 +32,7 @@ type TmuxHere = {
 };
 
 const STATE_TYPE = "scc_state";
-const SAFE_TOOLS = new Set(["read", "web_search", "fetch_content", "get_search_content"]);
+const SAFE_TOOLS = new Set(["read", "web_search", "fetch_content", "get_search_content", "ask_user_question"]);
 const RECENT_MESSAGES = 12;
 const MESSAGE_TEXT_LIMIT = 2_000;
 const COMPACTION_LIMIT = 3_000;
@@ -115,7 +115,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 		if (SAFE_TOOLS.has(event.toolName)) return;
 
 		setSidechatStatus(ctx, `sidechat: blocked ${event.toolName}`);
-		return { block: true, reason: "scc read-only mode: only read/web tools are allowed" };
+		return { block: true, reason: "scc read-only mode: only read/web/question tools are allowed" };
 	});
 
 	pi.on("user_bash", async () => {

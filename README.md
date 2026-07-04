@@ -64,7 +64,7 @@ After connect:
 - `edit`, `write`, and `bash` are removed from active tools,
 - a `tool_call` guard blocks non-allowlisted tools,
 - user `!` bash is blocked,
-- `read` and available web read tools remain allowed.
+- `read`, available web read tools, and `ask_user_question` remain allowed.
 
 ## Status examples
 
