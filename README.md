@@ -57,6 +57,10 @@ No intercom. No messages or keys are sent to the main Pi session.
 
 `/scc` syncs once. If the main session changes later, open a new side-chat or run `/scc --pick` to capture a fresh snapshot.
 
+## Troubleshooting
+
+If `/scc` finds a Pi pane but no matching saved session, the target chat may be too fresh. Send one message in the main chat, wait for the assistant response, then try `/scc` again.
+
 ## Read-only enforcement
 
 After connect:

@@ -181,9 +181,21 @@ export default function sccExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		const targets = (await Promise.all(panes.map((pane) => findActiveTargets(ctx, pane)))).flat();
+		const discoveries = await Promise.all(panes.map((pane) => findActiveTargets(ctx, pane)));
+		const targets = discoveries.flatMap((discovery) => discovery.targets);
 		if (targets.length === 0) {
-			ctx.ui.notify("sidechat: no active Pi session found in this tmux window", "warning");
+			const labeled = discoveries.filter((discovery) => discovery.label);
+			if (labeled.length === 0) {
+				ctx.ui.notify("sidechat: found Pi pane(s), but no visible chat: status label", "warning");
+				return;
+			}
+
+			ctx.ui.notify(
+				`sidechat: found Pi chat(s), but no matching saved session file yet:\n${labeled
+					.map((discovery) => `pane ${discovery.pane.paneId}: chat ${discovery.label}`)
+					.join("\n")}\nIf the target chat is fresh, send one message in it and try /scc again.`,
+				"warning",
+			);
 			return;
 		}
 
@@ -292,7 +304,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 
 	async function findActiveTargets(ctx: ExtensionContext, pane: TmuxPane) {
 		const label = await capturePaneChatLabel(pane);
-		if (!label) return [];
+		if (!label) return { pane, targets: [] };
 
 		const currentSession = ctx.sessionManager.getSessionFile();
 		const sessions = (await SessionManager.list(pane.cwd))
@@ -300,7 +312,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 			.filter((session) => !isSubagentSession(session))
 			.filter((session) => sessionMatchesLabel(session, label));
 
-		return sessions.map((session) => ({ pane, session, label }));
+		return { pane, label, targets: sessions.map((session) => ({ pane, session, label })) };
 	}
 
 	async function capturePaneChatLabel(pane: TmuxPane): Promise<string | undefined> {
@@ -308,7 +320,10 @@ export default function sccExtension(pi: ExtensionAPI) {
 		return result.code === 0 ? parseChatStatus(result.stdout) : undefined;
 	}
 
-	async function selectTarget(ctx: ExtensionContext, targets: Awaited<ReturnType<typeof findActiveTargets>>) {
+	async function selectTarget(
+		ctx: ExtensionContext,
+		targets: Awaited<ReturnType<typeof findActiveTargets>>["targets"],
+	) {
 		const options = targets.map((target, index) => {
 			const label = target.session.name?.trim() || target.session.id;
 			return `${index + 1}. ${label}    pane ${target.pane.paneId}    ${target.pane.cwd}    modified ${age(target.session.modified.getTime())} ago`;
