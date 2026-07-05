@@ -13,6 +13,7 @@ type SccState = {
 	connectedAt: number;
 	snapshotText?: string;
 	snapshotAt?: number;
+	priorActiveTools?: string[];
 };
 
 type TmuxPane = {
@@ -40,7 +41,6 @@ const SNAPSHOT_LIMIT = 18_000;
 
 export default function sccExtension(pi: ExtensionAPI) {
 	let state: SccState | undefined;
-	let explicitlyOff = false;
 
 	pi.on("session_start", async (_event, ctx) => {
 		state = restoreState(ctx);
@@ -49,42 +49,71 @@ export default function sccExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
+		const priorTools = state?.priorActiveTools;
 		state = restoreState(ctx);
 		if (state) enforceReadOnly();
+		else restoreTools(priorTools);
 		await updateStatus(ctx);
 	});
 
 	pi.registerCommand("scc", {
 		description: "Connect this pane as a read-only side-chat to another Pi tmux pane",
 		handler: async (args, ctx) => {
-			const arg = (args ?? "").trim();
+			const flags = (args ?? "")
+				.trim()
+				.split(/\s+/)
+				.filter(Boolean);
+			const flagSet = new Set(flags);
+			const allowedFlags = new Set(["--pick", "--status", "--off", "--force"]);
 
-			if (arg === "--status") {
+			if (flags.some((flag) => !allowedFlags.has(flag)) || hasConflictingModeFlags(flagSet, flags.length)) {
+				ctx.ui.notify("Usage: /scc [--pick] [--force] [--off|--status]", "error");
+				return;
+			}
+
+			if (flagSet.has("--status")) {
 				ctx.ui.notify(await updateStatus(ctx), "info");
 				return;
 			}
 
-			if (arg && arg !== "--pick") {
-				ctx.ui.notify("Usage: /scc [--pick|--status]", "error");
+			if (flagSet.has("--off")) {
+				const tools = state?.priorActiveTools;
+				clearState();
+				restoreTools(tools);
+				ctx.ui.notify(await updateStatus(ctx), "info");
 				return;
 			}
 
-			if (state && arg !== "--pick") {
+			const pick = flagSet.has("--pick");
+			const force = flagSet.has("--force");
+			const previousState = state;
+			const priorActiveTools = previousState?.priorActiveTools;
+			if (state && !pick) {
 				enforceReadOnly();
 				await updateStatus(ctx);
 				ctx.ui.notify(`sidechat: already connected to ${targetLabel(state)}`, "info");
 				return;
 			}
 
-			if (arg === "--pick") clearState();
+			if (!state && hasChatHistory(ctx) && !force) {
+				ctx.ui.notify(
+					"/scc works best from a fresh side-chat session. This chat already has history; use /scc --force to connect anyway.",
+					"warning",
+				);
+				return;
+			}
 
 			setSidechatStatus(ctx, "sidechat: picking target");
 			const next = await pickTarget(ctx);
 			if (!next) {
+				state = previousState;
+				if (state) enforceReadOnly();
 				await updateStatus(ctx);
 				return;
 			}
 
+			if (pick) clearState();
+			next.priorActiveTools = priorActiveTools ?? pi.getActiveTools();
 			state = next;
 			pi.appendEntry<SccState>(STATE_TYPE, next);
 			enforceReadOnly();
@@ -132,13 +161,11 @@ export default function sccExtension(pi: ExtensionAPI) {
 
 	function restoreState(ctx: ExtensionContext): SccState | undefined {
 		let restored: SccState | undefined;
-		explicitlyOff = false;
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== STATE_TYPE) continue;
 			const data = entry.data as (Partial<SccState> & { cleared?: boolean }) | undefined;
 			if (data?.cleared === true) {
 				restored = undefined;
-				explicitlyOff = true;
 			} else if (data && typeof data.targetSessionFile === "string") {
 				restored = {
 					targetSessionFile: data.targetSessionFile,
@@ -150,8 +177,10 @@ export default function sccExtension(pi: ExtensionAPI) {
 					connectedAt: typeof data.connectedAt === "number" ? data.connectedAt : Date.now(),
 					snapshotText: typeof data.snapshotText === "string" ? data.snapshotText : undefined,
 					snapshotAt: typeof data.snapshotAt === "number" ? data.snapshotAt : undefined,
+					priorActiveTools: Array.isArray(data.priorActiveTools)
+						? data.priorActiveTools.filter((tool): tool is string => typeof tool === "string")
+						: (restored?.priorActiveTools ?? state?.priorActiveTools),
 				};
-				explicitlyOff = false;
 			}
 		}
 		return restored;
@@ -159,13 +188,27 @@ export default function sccExtension(pi: ExtensionAPI) {
 
 	function clearState() {
 		state = undefined;
-		explicitlyOff = true;
 		pi.appendEntry(STATE_TYPE, { cleared: true, connectedAt: Date.now() });
 	}
 
 	function enforceReadOnly() {
+		if (state && !state.priorActiveTools) state.priorActiveTools = pi.getActiveTools();
 		const available = new Set(pi.getAllTools().map((tool) => tool.name));
 		pi.setActiveTools([...SAFE_TOOLS].filter((tool) => available.has(tool)));
+	}
+
+	function restoreTools(tools = state?.priorActiveTools) {
+		if (tools) pi.setActiveTools(tools);
+	}
+
+	function hasConflictingModeFlags(flags: Set<string>, count: number): boolean {
+		return count > 1 && (flags.has("--status") || flags.has("--off"));
+	}
+
+	function hasChatHistory(ctx: ExtensionContext): boolean {
+		return ctx.sessionManager
+			.getBranch()
+			.some((entry) => entry.type === "message" && ["user", "assistant"].includes(entry.message.role));
 	}
 
 	async function pickTarget(ctx: ExtensionContext): Promise<SccState | undefined> {
@@ -181,9 +224,21 @@ export default function sccExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		const targets = (await Promise.all(panes.map((pane) => findActiveTargets(ctx, pane)))).flat();
+		const discoveries = await Promise.all(panes.map((pane) => findActiveTargets(ctx, pane)));
+		const targets = discoveries.flatMap((discovery) => discovery.targets);
 		if (targets.length === 0) {
-			ctx.ui.notify("sidechat: no active Pi session found in this tmux window", "warning");
+			const labeled = discoveries.filter((discovery) => discovery.label);
+			if (labeled.length === 0) {
+				ctx.ui.notify("sidechat: found Pi pane(s), but no visible chat: status label", "warning");
+				return;
+			}
+
+			ctx.ui.notify(
+				`sidechat: found Pi chat(s), but no matching saved session file yet:\n${labeled
+					.map((discovery) => `pane ${discovery.pane.paneId}: chat ${discovery.label}`)
+					.join("\n")}\nIf the target chat is fresh, send one message in it and try /scc again.`,
+				"warning",
+			);
 			return;
 		}
 
@@ -292,7 +347,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 
 	async function findActiveTargets(ctx: ExtensionContext, pane: TmuxPane) {
 		const label = await capturePaneChatLabel(pane);
-		if (!label) return [];
+		if (!label) return { pane, targets: [] };
 
 		const currentSession = ctx.sessionManager.getSessionFile();
 		const sessions = (await SessionManager.list(pane.cwd))
@@ -300,7 +355,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 			.filter((session) => !isSubagentSession(session))
 			.filter((session) => sessionMatchesLabel(session, label));
 
-		return sessions.map((session) => ({ pane, session, label }));
+		return { pane, label, targets: sessions.map((session) => ({ pane, session, label })) };
 	}
 
 	async function capturePaneChatLabel(pane: TmuxPane): Promise<string | undefined> {
@@ -308,7 +363,10 @@ export default function sccExtension(pi: ExtensionAPI) {
 		return result.code === 0 ? parseChatStatus(result.stdout) : undefined;
 	}
 
-	async function selectTarget(ctx: ExtensionContext, targets: Awaited<ReturnType<typeof findActiveTargets>>) {
+	async function selectTarget(
+		ctx: ExtensionContext,
+		targets: Awaited<ReturnType<typeof findActiveTargets>>["targets"],
+	) {
 		const options = targets.map((target, index) => {
 			const label = target.session.name?.trim() || target.session.id;
 			return `${index + 1}. ${label}    pane ${target.pane.paneId}    ${target.pane.cwd}    modified ${age(target.session.modified.getTime())} ago`;
@@ -320,7 +378,7 @@ export default function sccExtension(pi: ExtensionAPI) {
 
 	async function updateStatus(ctx: ExtensionContext): Promise<string> {
 		if (!state) {
-			const text = explicitlyOff ? "sidechat: off" : `chat: ${currentSessionLabel(ctx)}`;
+			const text = `chat: ${currentSessionLabel(ctx)}`;
 			setSidechatStatus(ctx, text);
 			return text;
 		}
