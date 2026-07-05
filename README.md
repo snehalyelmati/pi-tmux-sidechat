@@ -34,8 +34,10 @@ The side-chat will connect to an active Pi pane in the same tmux window.
 
 ## Commands
 
-- `/scc` — connect, or reuse the existing connection.
+- `/scc` — connect from a fresh side-chat session, or reuse the existing connection.
+- `/scc --force` — connect even if this chat already has history.
 - `/scc --pick` — forget current target and reselect/resync.
+- `/scc --off` — disconnect and restore normal tools.
 - `/scc --status` — show connected target.
 
 ## How it works
@@ -75,7 +77,6 @@ After connect:
 - `chat: fanout-mvp` — normal named Pi pane.
 - `chat: 019f2916-...` — normal unnamed Pi pane with full session id.
 - `sidechat: fanout-mvp` — side-chat connected read-only.
-- `sidechat: off` — explicitly cleared.
 - `sidechat: picking target`
 - `sidechat: target missing`
 - `sidechat: blocked edit`

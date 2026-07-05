@@ -90,8 +90,10 @@ Pick main session:
 
 ## Commands
 
-- `/scc` connect or reuse existing connection.
+- `/scc` connect from a fresh side-chat session, or reuse existing connection.
+- `/scc --force` connect even if this chat already has history.
 - `/scc --pick` forget current target and reselect.
+- `/scc --off` disconnect and restore normal tools.
 - Optional `/scc --status` show connected target.
 
 ## Read-only enforcement
@@ -162,7 +164,8 @@ State shape:
   targetSessionId?: string,
   connectedAt: number,
   snapshotText?: string,
-  snapshotAt?: number
+  snapshotAt?: number,
+  priorActiveTools?: string[]
 }
 ```
 
@@ -193,7 +196,6 @@ Status states:
 ```text
 chat: <session-name-or-full-id>
 sidechat: <target-label-or-full-id>
-sidechat: off
 sidechat: picking target
 sidechat: target missing
 sidechat: blocked <tool>
