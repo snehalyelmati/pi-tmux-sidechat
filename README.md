@@ -76,6 +76,12 @@ After connect:
 - `sidechat: target missing`
 - `sidechat: blocked edit`
 
+## Tracking issues
+
+Use [GitHub Issues](https://github.com/snehalyelmati/pi-tmux-sidechat/issues) for bugs and feature requests.
+
+Suggested labels: `bug`, `enhancement`, `docs`, `question`.
+
 ## Notes
 
 - Candidate panes are scoped to the current tmux window, never cwd alone.
